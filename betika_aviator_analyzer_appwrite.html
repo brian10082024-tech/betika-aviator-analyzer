@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aviator Analyzer</title>
+<style>
+:root{color-scheme:dark;--bg:#101216;--panel:#1b2028;--muted:#aab3c0;--accent:#35c46a;--line:#303844}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f4f6f8;font:16px system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:760px;margin:auto;padding:18px}
+h1{font-size:25px;margin:4px 0}h2{font-size:18px;margin:0 0 12px}
+p,.muted{color:var(--muted);line-height:1.45}.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin:14px 0}
+button,.filelabel{border:0;border-radius:12px;background:var(--accent);color:#07140b;padding:12px 16px;font-weight:700;font-size:15px;display:inline-block;cursor:pointer}
+button.secondary{background:#303844;color:#fff}button:disabled{opacity:.45}
+input[type=file]{display:none}.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.stat{background:#252c36;border-radius:12px;padding:13px}.big{font-size:27px;font-weight:750}
+table{width:100%;border-collapse:collapse}td,th{padding:10px 6px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-weight:600}
+#preview{max-width:100%;max-height:260px;border-radius:10px;margin-top:12px;display:none}
+#detected{min-height:28px;overflow-wrap:anywhere}.chips{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.chip{background:#293342;border-radius:20px;padding:6px 10px;font-size:14px}
+input[type=number]{width:100px;background:#101216;color:white;border:1px solid var(--line);border-radius:8px;padding:8px}
+.note{font-size:13px}.warning{border-left:3px solid #e5ae42;padding-left:10px}input[type=email],input[type=password]{width:100%;max-width:420px;background:#101216;color:white;border:1px solid var(--line);border-radius:8px;padding:11px;margin:5px 0 10px}.statusline{overflow-wrap:anywhere}
+</style>
+</head>
+<body><main>
+<header><h1>✈ Aviator Analyzer</h1><p>Betika screenshot reader · Android prototype</p></header>
+<section class="panel">
+<h2>1. Read round history</h2>
+<p>Upload a screenshot showing the Round History panel. OCR runs in your browser using Tesseract.js. Review the detected values before saving.</p>
+<label class="filelabel" for="shot">Choose screenshot</label>
+<input id="shot" type="file" accept="image/*">
+<img id="preview" alt="Screenshot preview">
+<p id="status" class="muted">Waiting for screenshot.</p>
+<div id="detected"></div>
+<button id="add" disabled>Add detected rounds</button>
+</section>
+<section class="panel">
+<h2>2. Historical frequencies</h2>
+<div class="stats">
+<div class="stat"><div class="big" id="count">0</div><div class="muted">Rounds saved</div></div>
+<div class="stat"><div class="big" id="avg">—</div><div class="muted">Average multiplier</div></div>
+</div>
+<table><thead><tr><th>Target reached</th><th>Historical frequency</th><th>Count</th></tr></thead>
+<tbody id="freq"></tbody></table>
+<p class="note warning">These are frequencies in your saved sample, not dependable forecasts of the next round. Independent fair rounds cannot be predicted from previous multipliers.</p>
+</section>
+<section class="panel">
+<h2>3. Appwrite cloud backup</h2>
+<p>Create an account or sign in to save your round history to your Appwrite project. Your password is sent directly to Appwrite; it is not stored in this page.</p>
+<label for="email">Email address</label><br><input id="email" type="email" autocomplete="email" placeholder="you@example.com"><br>
+<label for="password">Password</label><br><input id="password" type="password" autocomplete="current-password" placeholder="At least 8 characters"><br>
+<button id="signup">Create account</button> <button id="login" class="secondary">Sign in</button> <button id="logout" class="secondary" disabled>Sign out</button>
+<p id="cloudstatus" class="muted statusline">Not signed in. Your rounds remain saved on this phone.</p>
+<button id="sync" disabled>Upload unsynced rounds to cloud</button>
+<p class="note">Cloud backup stores multiplier, round number, capture time, source and verification status. This does not predict future multipliers.</p>
+</section>
+<section class="panel">
+<h2>4. Saved round history</h2>
+<div class="chips" id="history"></div>
+<button class="secondary" id="undo">Undo last import</button>
+<button class="secondary" id="clear">Clear all data</button>
+<p class="note">Data is stored in this browser on this phone. Clearing browser data may erase it. Export your history if you want to keep a backup.</p>
+<button class="secondary" id="export">Export CSV</button>
+</section>
+<section class="panel">
+<h2>What this prototype can and cannot do</h2>
+<p>It can read uploaded screenshots, save multipliers and calculate sample frequencies for 1.5x, 2x, 3x and 5x.</p>
+<p>It does not yet monitor Betika live or capture another app's screen automatically. That requires a native Android app and explicit Android screen-capture permission.</p>
+</section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script type="module">
+import { Client, Account, TablesDB, ID } from "https://cdn.jsdelivr.net/npm/appwrite@21.1.0/+esm";
+const $=id=>document.getElementById(id);
+let detected=[], imported=[];
+let rounds=JSON.parse(localStorage.getItem('aviator_rounds_v1')||'[]');
+const APPWRITE_ENDPOINT='https://fra.cloud.appwrite.io/v1';
+const PROJECT_ID='6aec51f6003b5577faf2';
+const DATABASE_ID='aviator-data';
+const TABLE_ID='round_history';
+const client=new Client().setEndpoint(APPWRITE_ENDPOINT).setProject(PROJECT_ID);
+const account=new Account(client);
+const tablesDB=new TablesDB(client);
+let signedIn=false;
+let syncedCount=Number(localStorage.getItem('aviator_cloud_synced_count')||'0');
+function cloudMessage(message){$('cloudstatus').textContent=message}
+async function refreshSession(){try{const user=await account.get();signedIn=true;$('logout').disabled=false;$('sync').disabled=false;cloudMessage('Signed in as '+user.email+'. '+Math.max(0,rounds.length-syncedCount)+' round(s) waiting for upload.')}catch(e){signedIn=false;$('logout').disabled=true;$('sync').disabled=true;cloudMessage('Not signed in. Your rounds remain saved on this phone.')}}
+async function uploadPending(){if(!signedIn){cloudMessage('Please sign in first.');return}const pending=rounds.slice(syncedCount);if(!pending.length){cloudMessage('Everything currently on this phone has already been uploaded.');return} $('sync').disabled=true;try{for(let i=0;i<pending.length;i++){const multiplier=pending[i];const roundNumber=syncedCount+i+1;await tablesDB.createRow({databaseId:DATABASE_ID,tableId:TABLE_ID,rowId:ID.unique(),data:{multiplier,round_number:roundNumber,captured_at:new Date().toISOString(),source:'Betika screenshot OCR',verified:false}})}syncedCount=rounds.length;localStorage.setItem('aviator_cloud_synced_count',String(syncedCount));cloudMessage('Upload complete: '+pending.length+' round(s) saved to Appwrite.')}catch(err){cloudMessage('Upload stopped: '+(err.message||String(err))+' — check table permissions and column names.')}finally{$('sync').disabled=!signedIn}}
+function save(){localStorage.setItem('aviator_rounds_v1',JSON.stringify(rounds));render()}
+function render(){
+ $('count').textContent=rounds.length;
+ $('avg').textContent=rounds.length?(rounds.reduce((a,b)=>a+b,0)/rounds.length).toFixed(2)+'x':'—';
+ $('freq').innerHTML=[1.5,2,3,5].map(t=>{let n=rounds.filter(x=>x>=t).length;return `<tr><td>${t.toFixed(t%1?1:0)}x or higher</td><td>${rounds.length?(100*n/rounds.length).toFixed(1)+'%':'—'}</td><td>${n}/${rounds.length}</td></tr>`}).join('');
+ $('history').innerHTML=rounds.slice().reverse().slice(0,100).map(x=>`<span class="chip">${x.toFixed(2)}x</span>`).join('')||'<span class="muted">No rounds saved yet.</span>';
+}
+function parse(text){
+ const matches=[...text.matchAll(/(\d{1,3}(?:[.,]\d{1,2})?)\s*[xX×]/g)];
+ const vals=matches.map(m=>Number(m[1].replace(',','.'))).filter(n=>Number.isFinite(n)&&n>=1&&n<=10000);
+ return vals;
+}
+$('signup').onclick=async()=>{const email=$('email').value.trim(),password=$('password').value;if(!email||!password){cloudMessage('Enter your email and password first.');return}try{await account.create({userId:ID.unique(),email,password});await account.createEmailPasswordSession({email,password});await refreshSession();cloudMessage('Account created and signed in. You can now upload your rounds.')}catch(err){cloudMessage('Could not create account: '+(err.message||String(err)))}};
+$('login').onclick=async()=>{const email=$('email').value.trim(),password=$('password').value;if(!email||!password){cloudMessage('Enter your email and password first.');return}try{await account.createEmailPasswordSession({email,password});await refreshSession()}catch(err){cloudMessage('Sign-in failed: '+(err.message||String(err)))}};
+$('logout').onclick=async()=>{try{await account.deleteSession({sessionId:'current'});await refreshSession()}catch(err){cloudMessage('Sign-out issue: '+(err.message||String(err)))}};
+$('sync').onclick=uploadPending;
+refreshSession();
+$('shot').addEventListener('change',async e=>{
+ const file=e.target.files[0];if(!file)return;
+ $('preview').src=URL.createObjectURL(file);$('preview').style.display='block';
+ $('status').textContent='Loading OCR engine…';$('add').disabled=true;$('detected').textContent='';
+ try{
+  if(!window.Tesseract)throw new Error('OCR library did not load. Check your internet connection and reload this page.');
+  $('status').textContent='Reading screenshot… this may take a little time.';
+  const result=await Tesseract.recognize(file,'eng',{logger:m=>{if(m.status==='recognizing text')$('status').textContent='Reading screenshot: '+Math.round((m.progress||0)*100)+'%'}});
+  detected=parse(result.data.text);
+  $('detected').innerHTML=detected.length?'<strong>Detected '+detected.length+' values — check them before saving:</strong><div class="chips">'+detected.map(x=>`<span class="chip">${x.toFixed(2)}x</span>`).join('')+'</div>':'No multipliers recognized. Try a clearer screenshot focused on Round History.';
+  $('status').textContent='OCR finished.';$('add').disabled=!detected.length;
+ }catch(err){$('status').textContent='Could not read screenshot: '+err.message}
+});
+$('add').onclick=()=>{if(!detected.length)return;imported=detected.slice();rounds.push(...detected);save();detected=[];$('add').disabled=true;$('detected').textContent='Imported. Upload a new screenshot for the next batch.';$('status').textContent='Saved to this phone.';if(signedIn)cloudMessage('New rounds are saved on this phone. Tap Upload unsynced rounds to back them up.');$('sync').disabled=!signedIn};
+$('undo').onclick=()=>{if(!imported.length){alert('No recent import to undo.');return}if(rounds.length-imported.length<syncedCount){alert('Some of these rounds may already be in cloud backup. Do not undo a synced import.');return}rounds.splice(-imported.length,imported.length);imported=[];save()};
+$('clear').onclick=()=>{if(confirm('Delete all saved multipliers from this browser?')){rounds=[];imported=[];syncedCount=0;localStorage.setItem('aviator_cloud_synced_count','0');save()}};
+$('export').onclick=()=>{const csv='round,multiplier\\n'+rounds.map((x,i)=>`${i+1},${x}`).join('\\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='aviator-rounds.csv';a.click();URL.revokeObjectURL(a.href)};
+render();
+</script></body></html>
